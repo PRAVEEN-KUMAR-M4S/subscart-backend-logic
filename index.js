@@ -1,93 +1,71 @@
+require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
-const Product = require("./models/Product")
+const connectDB = require('./config/db');
+const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const mealRoutes = require('./routes/mealRoutes');
+
 const app = express();
+
+// Middleware
 app.use(express.json());
 
+// CORS — allow requests from Flutter (Android emulator / device)
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
 
+// Request logging middleware
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+    if (req.body && Object.keys(req.body).length > 0) {
+        console.log(`  Body:`, JSON.stringify(req.body, null, 2));
+    }
+    // Log response
+    const originalSend = res.send;
+    res.send = function(body) {
+        if (res.statusCode >= 400) {
+            console.log(`  Response ${res.statusCode}:`, body);
+        } else {
+            console.log(`  Response ${res.statusCode}: OK`);
+        }
+        return originalSend.call(this, body);
+    };
+    next();
+});
 
-mongoose.connect("mongodb+srv://praveenkumarotp3_db_user:yHkhK500cBJ1b6S1@cluster0.7lt3gtu.mongodb.net/?appName=Cluster0").then(() => {
-    console.log("connected to database")
-    app.listen(3000, () => {
-        console.log("server is listening on port funcking");
-    })
-}).catch(() => { console.log("connection failed") })
+// Connect to MongoDB
+connectDB();
 
+// Routes
+app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/meals', mealRoutes);
+
+// Health check
 app.get('/', (req, res) => {
-    res.send("hey i am here listing funcking ");
-})
+    res.json({ message: 'Subscart API is running' });
+});
 
-app.get('/api/products', async (req, res) => {
-    try {
-        const products = await Product.find({})
-        res.status(200).json({
-            success: true,
-            message: 'Product created successfully',
-            data: products
-        })
-    } catch (error) {
-        res.status(500).json({ message: error.message })
-    }
-})
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+    });
+});
 
-app.put('/api/product/:id',async(req,res)=>{
-    try {
-        const{id}=req.params;
-        const product=await Product.findByIdAndUpdate(id,req.body);
-        if(!product){
-            res.status(400).json({message:"product not found"});
-        }
-        const updatedProduct=await Product.findById(id);
-        res.status(200).json(updatedProduct);
+const PORT = process.env.PORT || 3000;
 
-    } catch (error) {
-        res.status(500).json({ message: error.message })
-    }
-})
-
-app.delete('/api/product/:id',async(req,res)=>{
-    try {
-        const {id}=req.params
-        const product = Product.findByIdAndDelete(id);
-        if(!product){
-            res.status(400).json({message:"product not found"});
-        }
-
-        res.status(200).json({message:"deleted"});
-    } catch (error) {
-         res.status(500).json({ message: error.message })
-    }
-})
-
-app.get('/api/product/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const product = await Product.findById(id)
-        res.status(200).json({
-            success: true,
-
-            data: product
-        })
-    } catch (error) {
-        res.status(500).json({ message: error.message })
-    }
-})
-
-app.post('/api/product', async (req, res) => {
-    try {
-        // 1. Create a new product instance from the request body
-        const product = new Product(req.body);
-        // 2. Save the product to the database
-        const savedProduct = await product.save();
-
-        // 3. Return a 201 Created status with the saved product data
-        res.status(201).json({
-            success: true,
-            message: 'Product created successfully',
-            data: savedProduct
-        });
-
-    } catch (error) {
-        res.status(500).json({ message: error.message })
-    }
-})
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server is running on port ${PORT}`);
+    console.log(`Local:  http://localhost:${PORT}`);
+    console.log(`LAN:    http://0.0.0.0:${PORT}`);
+});
