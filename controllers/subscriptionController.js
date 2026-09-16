@@ -35,13 +35,21 @@ exports.getSubscription = async (req, res) => {
             });
         }
 
-        // Get upcoming orders for this subscription
-        const orders = await Order.find({
-            subscriptionId: subscription._id,
-            date: { $gte: new Date() }
-        }).sort({ date: 1 });
+        const orderFilter = { subscriptionId: subscription._id };
 
-        console.log(`[Subscription] Found ${orders.length} orders`);
+        if (subscription.startDate && subscription.endDate) {
+            const rangeStart = new Date(subscription.startDate);
+            rangeStart.setHours(0, 0, 0, 0);
+
+            const rangeEnd = new Date(subscription.endDate);
+            rangeEnd.setHours(23, 59, 59, 999);
+
+            orderFilter.date = { $gte: rangeStart, $lte: rangeEnd };
+        }
+
+        const orders = await Order.find(orderFilter).sort({ date: 1 });
+
+        console.log(`[Subscription] Found ${orders.length} orders within date range`);
         console.log(`[Subscription] Response data:`, JSON.stringify({ subscription, ordersCount: orders.length }, null, 2));
 
         res.status(200).json({

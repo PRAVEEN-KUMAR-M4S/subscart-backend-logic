@@ -115,8 +115,17 @@ const orderSchema = new mongoose.Schema({
             protein: Number,
             carbs: Number
         },
-        // If moved, the target date
-        movedDate: Date
+        // If moved, the target date and destination order
+        movedDate: Date,
+        movedToOrderId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Order'
+        },
+        // If received via a move, the source order it came from
+        movedFromOrderId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Order'
+        }
     }]
 }, {
     timestamps: true

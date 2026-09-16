@@ -29,20 +29,33 @@ const subscriptionSchema = new mongoose.Schema({
         type: String,
         enum: ['active', 'paused'],
         default: 'active'
+    },
+    startDate: {
+        type: Date,
+        required: [true, 'Subscription start date is required'],
+        default: function() {
+            return this.createdAt || Date.now();
+        }
+    },
+    endDate: {
+        type: Date,
+        required: [true, 'Subscription end date is required']
     }
 }, {
     timestamps: true
 });
 
-// Virtual for subscription end date
-subscriptionSchema.virtual('endDate').get(function() {
-    const start = this.createdAt || new Date();
-    const end = new Date(start);
-    end.setDate(end.getDate() + (this.planDurationWeeks * 7));
-    return end;
+subscriptionSchema.pre('save', async function() {
+    if (!this.startDate) {
+        this.startDate = this.createdAt || new Date();
+    }
+    if (!this.endDate && this.startDate && this.planDurationWeeks) {
+        const end = new Date(this.startDate);
+        end.setDate(end.getDate() + (this.planDurationWeeks * 7));
+        this.endDate = end;
+    }
 });
 
-// Include virtuals in JSON
 subscriptionSchema.set('toJSON', { virtuals: true });
 subscriptionSchema.set('toObject', { virtuals: true });
 

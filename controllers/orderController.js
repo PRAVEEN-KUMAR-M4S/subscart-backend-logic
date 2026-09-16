@@ -1,11 +1,14 @@
 const Order = require('../models/Order');
+const Subscription = require('../models/Subscription');
+const mongoose = require('mongoose');
 
-// @desc    Get order for specific date
-// @route   GET /api/subscriptions/:id/orders?date=
+// @desc    Get orders for subscription — supports single date or date range
+// @route   GET /api/subscriptions/:id/orders?date=&startDate=&endDate=
+//          If no query params: returns all orders within subscription startDate-endDate
 exports.getOrdersForDate = async (req, res) => {
     console.log(`[Order] GET /api/subscriptions/${req.params.id}/orders`, req.query);
     try {
-        const { date } = req.query;
+        const { date, startDate, endDate } = req.query;
         const subscriptionId = req.params.id;
 
         let filter = { subscriptionId };
@@ -19,6 +22,33 @@ exports.getOrdersForDate = async (req, res) => {
             endOfDay.setHours(23, 59, 59, 999);
 
             filter.date = { $gte: startOfDay, $lte: endOfDay };
+        } else if (startDate || endDate) {
+            let gte = null;
+            let lte = null;
+
+            if (startDate) {
+                gte = new Date(startDate);
+                gte.setHours(0, 0, 0, 0);
+            }
+            if (endDate) {
+                lte = new Date(endDate);
+                lte.setHours(23, 59, 59, 999);
+            }
+
+            filter.date = {};
+            if (gte) filter.date.$gte = gte;
+            if (lte) filter.date.$lte = lte;
+        } else {
+            const subscription = await Subscription.findById(subscriptionId);
+            if (subscription && subscription.startDate && subscription.endDate) {
+                const rangeStart = new Date(subscription.startDate);
+                rangeStart.setHours(0, 0, 0, 0);
+
+                const rangeEnd = new Date(subscription.endDate);
+                rangeEnd.setHours(23, 59, 59, 999);
+
+                filter.date = { $gte: rangeStart, $lte: rangeEnd };
+            }
         }
 
         const orders = await Order.find(filter).sort({ date: 1 });
@@ -26,6 +56,7 @@ exports.getOrdersForDate = async (req, res) => {
 
         res.status(200).json({
             success: true,
+            count: orders.length,
             data: orders
         });
     } catch (error) {
@@ -132,12 +163,13 @@ exports.swapMeal = async (req, res) => {
     }
 };
 
-// @desc    Move order to another date
+// @desc    Move order to another date (with optional delivery time slot change)
 // @route   PATCH /api/orders/:orderId/move
+// @body    { newDate: ISO string, startTime?: string, endTime?: string }
 exports.moveOrder = async (req, res) => {
     console.log(`[Order] PATCH /api/orders/${req.params.orderId}/move`, req.body);
     try {
-        const { newDate } = req.body;
+        const { newDate, startTime, endTime } = req.body;
         const order = await Order.findById(req.params.orderId);
 
         if (!order) {
@@ -165,15 +197,72 @@ exports.moveOrder = async (req, res) => {
         }
 
         const movedDate = new Date(newDate);
+        const now = new Date();
+
+        // --- Validation 1: Cannot reschedule to past date ---
+        const movedDateStart = new Date(movedDate);
+        movedDateStart.setHours(0, 0, 0, 0);
+        const todayStart = new Date(now);
+        todayStart.setHours(0, 0, 0, 0);
+
+        if (movedDateStart < todayStart) {
+            console.log(`[Order] Cannot reschedule to past date: ${newDate}`);
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot reschedule to a past date. Please choose a future date.'
+            });
+        }
+
+        // --- Validation 2: Must be within subscription startDate and endDate ---
+        const subscription = await Subscription.findById(order.subscriptionId);
+        if (!subscription) {
+            return res.status(404).json({
+                success: false,
+                message: 'Subscription not found'
+            });
+        }
+
+        if (subscription.startDate && subscription.endDate) {
+            const subStart = new Date(subscription.startDate);
+            subStart.setHours(0, 0, 0, 0);
+            const subEnd = new Date(subscription.endDate);
+            subEnd.setHours(23, 59, 59, 999);
+
+            if (movedDateStart < subStart || movedDateStart > subEnd) {
+                const formatDate = (d) => d.toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric'
+                });
+                console.log(`[Order] Date ${newDate} outside subscription range [${formatDate(subStart)} - ${formatDate(subEnd)}]`);
+                return res.status(400).json({
+                    success: false,
+                    message: `Rescheduled date must be within your subscription dates: ${formatDate(subStart)} to ${formatDate(subEnd)}.`
+                });
+            }
+        }
+
+        // --- Validation 3: If it's today, validate time slot is also in the future ---
         const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const dayLabel = days[movedDate.getDay()];
+
+        if (movedDateStart.getTime() === todayStart.getTime()) {
+            const effectiveStart = startTime || order.deliverySlot.startTime;
+            const slotDateTime = _combineDateAndTime(movedDate, effectiveStart);
+            if (slotDateTime <= now) {
+                console.log(`[Order] Cannot reschedule to past time slot today: ${effectiveStart}`);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Cannot reschedule to a past time today. Please choose a future time slot.'
+                });
+            }
+        }
 
         // Check if a slot exists for this day
-        const dayLabel = days[movedDate.getDay()];
+        const checkDate = new Date(movedDate);
         const existingOrder = await Order.findOne({
             subscriptionId: order.subscriptionId,
             date: {
-                $gte: new Date(movedDate.setHours(0, 0, 0, 0)),
-                $lte: new Date(movedDate.setHours(23, 59, 59, 999))
+                $gte: new Date(checkDate.setHours(0, 0, 0, 0)),
+                $lte: new Date(checkDate.setHours(23, 59, 59, 999))
             },
             _id: { $ne: order._id }
         });
@@ -186,18 +275,29 @@ exports.moveOrder = async (req, res) => {
             });
         }
 
-        // Update order date
+        // --- Update order date ---
         order.date = new Date(newDate);
         order.dayLabel = dayLabel;
         order.dateNum = new Date(newDate).getDate();
         order.status = 'moved';
+
+        // --- Optionally update delivery time slot ---
+        if (startTime && endTime) {
+            const editableUntil = calculateEditableUntil(startTime);
+            order.deliverySlot = {
+                startTime,
+                endTime,
+                editableUntil
+            };
+        }
+
         await order.save();
 
-        console.log(`[Order] Moved order: ${req.params.orderId} to ${newDate}`);
+        console.log(`[Order] Moved order: ${req.params.orderId} to ${newDate}${startTime ? ` (slot: ${startTime}-${endTime})` : ''}`);
 
         res.status(200).json({
             success: true,
-            message: 'Order moved successfully',
+            message: 'Order rescheduled successfully',
             data: order
         });
     } catch (error) {
@@ -236,6 +336,34 @@ exports.rescheduleOrder = async (req, res) => {
                 success: false,
                 message: 'Start time and end time are required'
             });
+        }
+
+        const now = new Date();
+        const orderDate = new Date(order.date);
+        const orderDateStart = new Date(orderDate);
+        orderDateStart.setHours(0, 0, 0, 0);
+        const todayStart = new Date(now);
+        todayStart.setHours(0, 0, 0, 0);
+
+        // --- Validation 1: Cannot reschedule time if order date is in the past ---
+        if (orderDateStart < todayStart) {
+            console.log(`[Order] Cannot reschedule time for past date order: ${order.date}`);
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot reschedule time for a past order.'
+            });
+        }
+
+        // --- Validation 2: If order is today, new time slot must be in the future ---
+        if (orderDateStart.getTime() === todayStart.getTime()) {
+            const slotDateTime = _combineDateAndTime(orderDate, startTime);
+            if (slotDateTime <= now) {
+                console.log(`[Order] Cannot reschedule to past time slot today: ${startTime}`);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Cannot reschedule to a past time today. Please choose a future time slot.'
+                });
+            }
         }
 
         // Calculate editableUntil (typically 1 hour before start)
@@ -439,24 +567,40 @@ exports.addItem = async (req, res) => {
     }
 };
 
-// @desc    Move a specific item to another date (creates a new order for that item)
+// @desc    Move a specific item INTO AN EXISTING target order
+//          Removes the item from the source order and appends it to targetOrderId.items
 // @route   PATCH /api/orders/:orderId/items/:itemId/move
+// @body    { targetOrderId: "..." }
 exports.moveItem = async (req, res) => {
     console.log(`[Order] PATCH /api/orders/${req.params.orderId}/items/${req.params.itemId}/move`, req.body);
     try {
         const { orderId, itemId } = req.params;
-        const { newDate } = req.body;
-        const order = await Order.findById(orderId);
+        const { targetOrderId } = req.body;
+        let sourceOrder = await Order.findById(orderId);
 
-        if (!order) {
+        if (!sourceOrder) {
             return res.status(404).json({
                 success: false,
-                message: 'Order not found'
+                message: 'Source order not found'
+            });
+        }
+
+        if (!targetOrderId) {
+            return res.status(400).json({
+                success: false,
+                message: 'targetOrderId is required'
+            });
+        }
+
+        if (targetOrderId.toString() === orderId.toString()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cannot move an item into the same order'
             });
         }
 
         // Find the item by _id
-        const itemIndex = order.items.findIndex(item => item._id.toString() === itemId);
+        const itemIndex = sourceOrder.items.findIndex(item => item._id.toString() === itemId);
         if (itemIndex === -1) {
             return res.status(404).json({
                 success: false,
@@ -464,65 +608,64 @@ exports.moveItem = async (req, res) => {
             });
         }
 
-        if (!isEditable(order)) {
+        if (!isEditable(sourceOrder)) {
             return res.status(400).json({
                 success: false,
-                message: 'Order is no longer editable. Edit window has passed.'
+                message: 'Source order is no longer editable. Edit window has passed.'
             });
         }
 
-        if (!newDate) {
-            return res.status(400).json({
+        let targetOrder = await Order.findById(targetOrderId);
+        if (!targetOrder) {
+            return res.status(404).json({
                 success: false,
-                message: 'New date is required'
+                message: 'Target order not found'
             });
         }
 
-        const movedDate = new Date(newDate);
-        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const dayLabel = days[movedDate.getDay()];
+        if (!isEditable(targetOrder)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Target order is no longer editable. Edit window has passed.'
+            });
+        }
 
-        // Mark the item as moved (it stays in the order but is flagged)
-        order.items[itemIndex].itemStatus = 'moved';
-        order.items[itemIndex].movedDate = movedDate;
-        await order.save();
+        if (targetOrder.subscriptionId.toString() !== sourceOrder.subscriptionId.toString()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Target order must belong to the same subscription'
+            });
+        }
 
-        // Create a new order on the target date with just this item
-        const movedItem = order.items[itemIndex];
-        await Order.create({
-            subscriptionId: order.subscriptionId,
-            date: movedDate,
-            dayLabel: dayLabel,
-            dateNum: movedDate.getDate(),
-            status: 'moved',
-            address: order.address,
-            deliverySlot: order.deliverySlot,
-            meal: {
-                name: movedItem.name,
-                image: movedItem.image,
-                calories: movedItem.calories,
-                fat: movedItem.fat,
-                protein: movedItem.protein,
-                carbs: movedItem.carbs
-            },
-            items: [{
-                name: movedItem.name,
-                image: movedItem.image,
-                calories: movedItem.calories,
-                fat: movedItem.fat,
-                protein: movedItem.protein,
-                carbs: movedItem.carbs,
-                quantity: movedItem.quantity,
-                itemStatus: 'scheduled'
-            }]
-        });
+        // Extract + REMOVE the item from the source items array
+        const [sourceItem] = sourceOrder.items.splice(itemIndex, 1);
 
-        console.log(`[Order] Moved item ${itemId} (index ${itemIndex}) from order ${orderId} to ${newDate}`);
+        // Append the item (fresh subdocument, new _id) to the target order
+        const newItem = {
+            name: sourceItem.name,
+            image: sourceItem.image,
+            calories: sourceItem.calories,
+            fat: sourceItem.fat,
+            protein: sourceItem.protein,
+            carbs: sourceItem.carbs,
+            quantity: sourceItem.quantity || 1,
+            itemStatus: 'scheduled',
+            movedFromOrderId: sourceOrder._id
+        };
+        targetOrder.items.push(newItem);
+
+        sourceOrder = await sourceOrder.save();
+        targetOrder = await targetOrder.save();
+
+        console.log(`[Order] Moved item ${itemId} REMOVED from order ${orderId} (items now: ${sourceOrder.items.length}) and ADDED to target order ${targetOrderId} (items now: ${targetOrder.items.length})`);
 
         res.status(200).json({
             success: true,
             message: 'Item moved successfully',
-            data: order
+            data: {
+                sourceOrder,
+                targetOrder
+            }
         });
     } catch (error) {
         console.error(`[Order] Error:`, error.message);
@@ -566,4 +709,24 @@ function calculateEditableUntil(startTime) {
     const displayHours = hours > 12 ? hours - 12 : hours === 0 ? 12 : hours;
 
     return `${displayHours}:${minutes.toString().padStart(2, '0')} ${newPeriod}`;
+}
+
+// Helper: Combine a Date object (date part) with a time string (e.g. "8:17 am")
+// Returns a Date object with both date and time set
+function _combineDateAndTime(date, timeStr) {
+    const result = new Date(date);
+    try {
+        const parts = (timeStr || '').trim().split(/\s+/);
+        if (parts.length < 2) return result;
+        const [time, period] = parts;
+        let [hours, minutes] = time.split(':').map(Number);
+        hours = hours || 0;
+        minutes = minutes || 0;
+        if (period.toLowerCase() === 'pm' && hours !== 12) hours += 12;
+        if (period.toLowerCase() === 'am' && hours === 12) hours = 0;
+        result.setHours(hours, minutes, 0, 0);
+    } catch (_) {
+        // keep default if parse fails
+    }
+    return result;
 }
