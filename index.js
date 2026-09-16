@@ -3,7 +3,7 @@ const express = require('express');
 const connectDB = require('./config/db');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const orderRoutes = require('./routes/orderRoutes');
-const mealRoutes = require('./routes/mealRoutes');
+const itemRoutes = require('./routes/itemRoutes');
 
 const app = express();
 
@@ -46,7 +46,7 @@ connectDB();
 // Routes
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/orders', orderRoutes);
-app.use('/api/meals', mealRoutes);
+app.use('/api/items', itemRoutes);
 
 // Health check
 app.get('/', (req, res) => {

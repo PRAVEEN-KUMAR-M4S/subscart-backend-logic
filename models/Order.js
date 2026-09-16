@@ -42,7 +42,7 @@ const orderSchema = new mongoose.Schema({
             required: true
         }
     },
-    // Primary meal (for backward compatibility)
+    // Primary item (for backward compatibility)
     meal: {
         name: {
             type: String,
@@ -52,25 +52,17 @@ const orderSchema = new mongoose.Schema({
             type: String,
             default: ''
         },
-        calories: {
-            type: Number,
-            default: 0
-        },
-        fat: {
-            type: Number,
-            default: 0
-        },
-        protein: {
-            type: Number,
-            default: 0
-        },
-        carbs: {
-            type: Number,
-            default: 0
+        description: {
+            type: String,
+            default: ''
         }
     },
     // Multiple items in this order
     items: [{
+        _id: {
+            type: mongoose.Schema.Types.ObjectId,
+            auto: true
+        },
         name: {
             type: String,
             required: true
@@ -79,21 +71,9 @@ const orderSchema = new mongoose.Schema({
             type: String,
             default: ''
         },
-        calories: {
-            type: Number,
-            default: 0
-        },
-        fat: {
-            type: Number,
-            default: 0
-        },
-        protein: {
-            type: Number,
-            default: 0
-        },
-        carbs: {
-            type: Number,
-            default: 0
+        description: {
+            type: String,
+            default: ''
         },
         quantity: {
             type: Number,
@@ -106,14 +86,11 @@ const orderSchema = new mongoose.Schema({
             enum: ['scheduled', 'skipped', 'swapped', 'moved'],
             default: 'scheduled'
         },
-        // If swapped, the new meal data
+        // If swapped, the new item data
         swappedMeal: {
             name: String,
             image: String,
-            calories: Number,
-            fat: Number,
-            protein: Number,
-            carbs: Number
+            description: String
         },
         // If moved, the target date and destination order
         movedDate: Date,

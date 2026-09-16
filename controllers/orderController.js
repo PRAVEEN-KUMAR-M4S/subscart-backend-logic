@@ -2,6 +2,16 @@ const Order = require('../models/Order');
 const Subscription = require('../models/Subscription');
 const mongoose = require('mongoose');
 
+const findOrderItemIndex = (order, itemId) => {
+    const requestedId = String(itemId).trim();
+    return order.items.findIndex((item) => {
+        const ids = [item._id, item.id, item.mealId]
+            .filter(Boolean)
+            .map((value) => value.toString());
+        return ids.includes(requestedId);
+    });
+};
+
 // @desc    Get orders for subscription — supports single date or date range
 // @route   GET /api/subscriptions/:id/orders?date=&startDate=&endDate=
 //          If no query params: returns all orders within subscription startDate-endDate
@@ -142,10 +152,7 @@ exports.swapMeal = async (req, res) => {
         order.meal = {
             name: newMeal.name,
             image: newMeal.image || '',
-            calories: newMeal.calories || 0,
-            fat: newMeal.fat || 0,
-            protein: newMeal.protein || 0,
-            carbs: newMeal.carbs || 0
+            description: newMeal.description || ''
         };
         order.status = 'swapped';
         await order.save();
@@ -254,25 +261,6 @@ exports.moveOrder = async (req, res) => {
                     message: 'Cannot reschedule to a past time today. Please choose a future time slot.'
                 });
             }
-        }
-
-        // Check if a slot exists for this day
-        const checkDate = new Date(movedDate);
-        const existingOrder = await Order.findOne({
-            subscriptionId: order.subscriptionId,
-            date: {
-                $gte: new Date(checkDate.setHours(0, 0, 0, 0)),
-                $lte: new Date(checkDate.setHours(23, 59, 59, 999))
-            },
-            _id: { $ne: order._id }
-        });
-
-        if (existingOrder) {
-            console.log(`[Order] An order already exists for date ${newDate}`);
-            return res.status(400).json({
-                success: false,
-                message: 'An order already exists for this date'
-            });
         }
 
         // --- Update order date ---
@@ -404,8 +392,14 @@ exports.skipItem = async (req, res) => {
             });
         }
 
-        // Find the item by _id
-        const itemIndex = order.items.findIndex(item => item._id.toString() === itemId);
+        console.log(`[skipItem] Looking for item ${itemId} in order ${orderId}`);
+        console.log(`[skipItem] Order has ${order.items.length} items`);
+        order.items.forEach((item, i) => {
+            console.log(`[skipItem]   item[${i}]: _id=${item._id}`);
+        });
+
+        const itemIndex = findOrderItemIndex(order, itemId);
+        console.log(`[skipItem] itemIndex result: ${itemIndex}`);
         if (itemIndex === -1) {
             return res.status(404).json({
                 success: false,
@@ -413,13 +407,7 @@ exports.skipItem = async (req, res) => {
             });
         }
 
-        // Check if order is editable
-        if (!isEditable(order)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Order is no longer editable. Edit window has passed.'
-            });
-        }
+        // Editability is controlled by the Flutter client
 
         // Remove the item from the order completely
         const skippedItem = order.items[itemIndex];
@@ -462,8 +450,14 @@ exports.swapItem = async (req, res) => {
             });
         }
 
-        // Find the item by _id
-        const itemIndex = order.items.findIndex(item => item._id.toString() === itemId);
+        console.log(`[swapItem] Looking for item ${itemId} in order ${orderId}`);
+        console.log(`[swapItem] Order has ${order.items.length} items`);
+        order.items.forEach((item, i) => {
+            console.log(`[swapItem]   item[${i}]: _id=${item._id}, id=${item.id}`);
+        });
+
+        const itemIndex = findOrderItemIndex(order, itemId);
+        console.log(`[swapItem] itemIndex result: ${itemIndex}`);
         if (itemIndex === -1) {
             return res.status(404).json({
                 success: false,
@@ -471,12 +465,7 @@ exports.swapItem = async (req, res) => {
             });
         }
 
-        if (!isEditable(order)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Order is no longer editable. Edit window has passed.'
-            });
-        }
+        // Editability is controlled by the Flutter client — skip backend check for per-item ops
 
         if (!newMeal || !newMeal.name) {
             return res.status(400).json({
@@ -485,15 +474,16 @@ exports.swapItem = async (req, res) => {
             });
         }
 
-        // Update the specific item with swapped meal
-        order.items[itemIndex].itemStatus = 'swapped';
-        order.items[itemIndex].swappedMeal = {
+        // Update the specific item with swapped item data
+        const item = order.items[itemIndex];
+        item.itemStatus = 'swapped';
+        item.name = newMeal.name;
+        item.image = newMeal.image || '';
+        item.description = newMeal.description || '';
+        item.swappedMeal = {
             name: newMeal.name,
             image: newMeal.image || '',
-            calories: newMeal.calories || 0,
-            fat: newMeal.fat || 0,
-            protein: newMeal.protein || 0,
-            carbs: newMeal.carbs || 0
+            description: newMeal.description || ''
         };
         await order.save();
 
@@ -526,13 +516,7 @@ exports.addItem = async (req, res) => {
             });
         }
 
-        // Check if order is editable
-        if (!isEditable(order)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Order is no longer editable. Edit window has passed.'
-            });
-        }
+        // Editability is controlled by the Flutter client
 
         // Validate new item data
         if (!newItem || !newItem.name) {
@@ -600,7 +584,14 @@ exports.moveItem = async (req, res) => {
         }
 
         // Find the item by _id
-        const itemIndex = sourceOrder.items.findIndex(item => item._id.toString() === itemId);
+        console.log(`[moveItem] Looking for item ${itemId} in order ${orderId}`);
+        console.log(`[moveItem] Order has ${sourceOrder.items.length} items`);
+        sourceOrder.items.forEach((item, i) => {
+            console.log(`[moveItem]   item[${i}]: _id=${item._id}`);
+        });
+
+        const itemIndex = findOrderItemIndex(sourceOrder, itemId);
+        console.log(`[moveItem] itemIndex result: ${itemIndex}`);
         if (itemIndex === -1) {
             return res.status(404).json({
                 success: false,
@@ -608,25 +599,13 @@ exports.moveItem = async (req, res) => {
             });
         }
 
-        if (!isEditable(sourceOrder)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Source order is no longer editable. Edit window has passed.'
-            });
-        }
+        // Editability is controlled by the Flutter client
 
         let targetOrder = await Order.findById(targetOrderId);
         if (!targetOrder) {
             return res.status(404).json({
                 success: false,
                 message: 'Target order not found'
-            });
-        }
-
-        if (!isEditable(targetOrder)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Target order is no longer editable. Edit window has passed.'
             });
         }
 
@@ -644,10 +623,7 @@ exports.moveItem = async (req, res) => {
         const newItem = {
             name: sourceItem.name,
             image: sourceItem.image,
-            calories: sourceItem.calories,
-            fat: sourceItem.fat,
-            protein: sourceItem.protein,
-            carbs: sourceItem.carbs,
+            description: sourceItem.description || '',
             quantity: sourceItem.quantity || 1,
             itemStatus: 'scheduled',
             movedFromOrderId: sourceOrder._id
